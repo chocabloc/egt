@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hawk-Dove Spatial Game</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #111827; color: white; font-family: sans-serif; }
+        canvas { display: block; }
+        .control-group { margin-bottom: 1rem; }
+        input[type=range] { width: 100%; accent-color: #3b82f6; }
+    </style>
+</head>
+<body class="flex h-screen w-full">
+
+    <!-- Left: Simulation Canvas -->
+    <div class="flex-1 relative">
+        <canvas id="simCanvas" class="w-full h-full"></canvas>
+    </div>
+
+    <!-- Right: UI, Controls, and Graph -->
+    <div class="w-96 bg-gray-900 border-l border-gray-700 p-6 flex flex-col gap-6 overflow-y-auto">
+        
+        <div>
+            <h1 class="text-2xl font-bold mb-1">Evolutionary Dynamics</h1>
+            <p class="text-gray-400 text-sm mb-4">Hawk-Dove Spatial Model</p>
+        </div>
+
+        <!-- Graph Canvas -->
+        <div class="bg-gray-800 rounded-lg p-2 border border-gray-700 h-48 relative">
+            <span class="absolute top-2 left-2 text-xs font-bold text-red-500 z-10">Hawks</span>
+            <span class="absolute bottom-2 left-2 text-xs font-bold text-blue-500 z-10">Doves</span>
+            <canvas id="graphCanvas" class="w-full h-full"></canvas>
+        </div>
+
+        <!-- Real-time Stats -->
+        <div class="grid grid-cols-2 gap-4">
+            <div class="bg-gray-800 p-3 rounded-lg border border-gray-700">
+                <div class="text-xs text-gray-400 uppercase tracking-wider mb-1">Populations</div>
+                <div class="flex justify-between font-bold">
+                    <span class="text-red-500" id="stat-hawk-pop">0</span>
+                    <span class="text-blue-500" id="stat-dove-pop">0</span>
+                </div>
+            </div>
+            <div class="bg-gray-800 p-3 rounded-lg border border-gray-700">
+                <div class="text-xs text-gray-400 uppercase tracking-wider mb-1">Avg Fitness</div>
+                <div class="flex justify-between font-bold">
+                    <span class="text-red-500" id="stat-hawk-fit">0.0</span>
+                    <span class="text-blue-500" id="stat-dove-fit">0.0</span>
+                </div>
+            </div>
+            <div class="bg-gray-800 p-3 rounded-lg border border-gray-700">
+                <div class="text-xs text-gray-400 uppercase tracking-wider mb-1">Time Elapsed</div>
+                <div class="font-bold text-white" id="stat-time">0:00</div>
+            </div>
+            <div class="bg-gray-800 p-3 rounded-lg border border-gray-700">
+                <div class="text-xs text-gray-400 uppercase tracking-wider mb-1">Hawk % (10s Avg)</div>
+                <div class="font-bold text-red-500" id="stat-hawk-avg">0.0%</div>
+            </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="flex-1">
+            <h2 class="text-lg font-semibold mb-4 border-b border-gray-700 pb-2">Parameters</h2>
+            
+            <div class="control-group">
+                <label class="flex justify-between text-sm mb-1">
+                    <span>Reward (V)</span>
+                    <span id="val-v" class="font-bold text-green-400">50</span>
+                </label>
+                <input type="range" id="input-v" min="10" max="200" step="5" value="50">
+                <p class="text-xs text-gray-500 mt-1">Value of the food resource.</p>
+            </div>
+
+            <div class="control-group">
+                <label class="flex justify-between text-sm mb-1">
+                    <span>Cost of Fighting (C)</span>
+                    <span id="val-c" class="font-bold text-red-400">100</span>
+                </label>
+                <input type="range" id="input-c" min="0" max="300" step="10" value="100">
+                <p class="text-xs text-gray-500 mt-1">Penalty when two Hawks clash.</p>
+            </div>
+
+            <div class="control-group mt-6">
+                <button id="btn-reset" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded transition">
+                    Reset Simulation
+                </button>
+            </div>
+        </div>
+
+    </div>
+
+<script>
+    // --- Configuration & Constants ---
+    const simCanvas = document.getElementById('simCanvas');
+    const simCtx = simCanvas.getContext('2d');
+    const graphCanvas = document.getElementById('graphCanvas');
+    const graphCtx = graphCanvas.getContext('2d');
+
+    let V = 50;
+    let C = 100;
+    
+    const AGENT_SPEED = 1.5;
+    const SENSE_RADIUS = 120;
+    const MAX_AGE = 1500;
+    const FOOD_SPAWN_CHANCE = 1.0; // per frame
+    const COST_OF_LIVING = 0.05; // fitness drain per frame
+    const REPRODUCTION_COST = 30; 
+    const REPRODUCTION_MIN_AGE = 0; // 150; // frames before allowed to reproduce
+    const BASE_FITNESS = 40;
+
+    // --- State ---
+    let width, height;
+    let agents = [];
+    let foods = [];
+    let history = []; // for the graph {h: hawkProp, d: doveProp}
+    let frameCount = 0;
+
+    // Resize canvas to fill container
+    function resize() {
+        const rect = simCanvas.parentElement.getBoundingClientRect();
+        width = simCanvas.width = rect.width;
+        height = simCanvas.height = rect.height;
+        
+        const gRect = graphCanvas.parentElement.getBoundingClientRect();
+        graphCanvas.width = gRect.width;
+        graphCanvas.height = gRect.height;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // --- DOM Event Listeners ---
+    document.getElementById('input-v').addEventListener('input', (e) => {
+        V = parseInt(e.target.value);
+        document.getElementById('val-v').innerText = V;
+    });
+    document.getElementById('input-c').addEventListener('input', (e) => {
+        C = parseInt(e.target.value);
+        document.getElementById('val-c').innerText = C;
+    });
+    document.getElementById('btn-reset').addEventListener('click', initSim);
+
+    // --- Helper Functions ---
+    // Shortest distance in a toroidal (wrap-around) space
+    function toroidalDistance(x1, y1, x2, y2) {
+        let dx = Math.abs(x1 - x2);
+        let dy = Math.abs(y1 - y2);
+        if (dx > width / 2) dx = width - dx;
+        if (dy > height / 2) dy = height - dy;
+        return Math.sqrt(dx*dx + dy*dy);
+    }
+
+    // Get the shortest directional vector in toroidal space
+    function toroidalDirection(fromX, fromY, toX, toY) {
+        let dx = toX - fromX;
+        let dy = toY - fromY;
+        if (dx > width / 2) dx -= width;
+        else if (dx < -width / 2) dx += width;
+        if (dy > height / 2) dy -= height;
+        else if (dy < -height / 2) dy += height;
+        return { dx, dy };
+    }
+
+    function createAgent(x, y, strategy) {
+        const angle = Math.random() * Math.PI * 2;
+        return {
+            x: x,
+            y: y,
+            dir: angle, // moving direction
+            strategy: strategy, // 'hawk' or 'dove'
+            fitness: BASE_FITNESS,
+            age: 0,
+            targetFood: null
+        };
+    }
+
+    function spawnFood() {
+        foods.push({
+            x: Math.random() * width,
+            y: Math.random() * height,
+            lockedAgents: [] // max 2
+        });
+    }
+
+    // --- Initialization ---
+    function initSim() {
+        agents = [];
+        foods = [];
+        history = [];
+        frameCount = 0;
+        // Start with 100 hawks and 100 doves scattered randomly
+        for(let i=0; i<100; i++) agents.push(createAgent(Math.random()*width, Math.random()*height, 'hawk'));
+        for(let i=0; i<100; i++) agents.push(createAgent(Math.random()*width, Math.random()*height, 'dove'));
+    }
+
+    // --- Core Game Loop ---
+    function update() {
+        frameCount++;
+
+        // 1. Environmental events
+        if (Math.random() < FOOD_SPAWN_CHANCE) spawnFood();
+
+        // 2. Lock-in Phase
+        // Re-evaluate locks for every food pellet
+        for (let f of foods) {
+            // Keep agents that are already locked onto this food
+            let currentLocks = f.lockedAgents.filter(a => agents.includes(a) && a.targetFood === f);
+
+            // If there's still room for more agents (max 2)
+            if (currentLocks.length < 2) {
+                let candidates = [];
+                // Find free agents within sense radius
+                for (let a of agents) {
+                    if (a.targetFood === null) {
+                        let d = toroidalDistance(a.x, a.y, f.x, f.y);
+                        if (d <= SENSE_RADIUS) {
+                            candidates.push({agent: a, dist: d});
+                        }
+                    }
+                }
+
+                // Sort purely by distance, closest first
+                candidates.sort((c1, c2) => c1.dist - c2.dist);
+
+                // Add new agents up to the limit of 2
+                let needed = 2 - currentLocks.length;
+                let newLocks = candidates.slice(0, needed).map(c => c.agent);
+
+                for (let a of newLocks) {
+                    a.targetFood = f;
+                    currentLocks.push(a);
+                }
+            }
+            f.lockedAgents = currentLocks;
+        }
+
+        // 3. Movement & Payoff Phase
+        for (let i = agents.length - 1; i >= 0; i--) {
+            let a = agents[i];
+            
+            // Aging & natural death / starvation
+            a.age++;
+            a.fitness -= COST_OF_LIVING;
+            if (a.age > MAX_AGE || a.fitness <= 0) {
+                if (a.targetFood) {
+                    a.targetFood.lockedAgents = a.targetFood.lockedAgents.filter(ag => ag !== a);
+                }
+                agents.splice(i, 1);
+                continue;
+            }
+
+            // Movement logic
+            if (a.targetFood) {
+                // Move towards food
+                let vec = toroidalDirection(a.x, a.y, a.targetFood.x, a.targetFood.y);
+                a.dir = Math.atan2(vec.dy, vec.dx);
+            } else {
+                // Random wander
+                a.dir += (Math.random() - 0.5) * 0.4;
+            }
+
+            a.x += Math.cos(a.dir) * AGENT_SPEED;
+            a.y += Math.sin(a.dir) * AGENT_SPEED;
+
+            // Toroidal wrap-around
+            if (a.x < 0) a.x += width;
+            if (a.x >= width) a.x -= width;
+            if (a.y < 0) a.y += height;
+            if (a.y >= height) a.y -= height;
+
+            // Check arrival at food
+            if (a.targetFood) {
+                let d = toroidalDistance(a.x, a.y, a.targetFood.x, a.targetFood.y);
+                if (d < 5) { // Arrived!
+                    let f = a.targetFood;
+                    let a1 = f.lockedAgents[0];
+                    let a2 = f.lockedAgents[1];
+
+                    // Resolve Payoffs
+                    if (a1 && !a2) {
+                        a1.fitness += V;
+                    } else if (a1 && a2) {
+                        if (a1.strategy === 'hawk' && a2.strategy === 'hawk') {
+                            a1.fitness += (V - C) / 2;
+                            a2.fitness += (V - C) / 2;
+                        } else if (a1.strategy === 'dove' && a2.strategy === 'dove') {
+                            a1.fitness += V / 2;
+                            a2.fitness += V / 2;
+                        } else {
+                            // One Hawk, One Dove (Explicitly check who is who)
+                            if (a1.strategy === 'hawk') {
+                                a1.fitness += V;
+                                a2.fitness += 0;
+                            } else {
+                                a1.fitness += 0;
+                                a2.fitness += V;
+                            }
+                        }
+                    }
+
+                    // Clear the food
+                    if (a1) a1.targetFood = null;
+                    if (a2) a2.targetFood = null;
+                    f.toBeDeleted = true;
+                }
+            }
+
+            // 4. Reproduction Phase
+            // Probability of reproducing increases with fitness
+            let reproChance = Math.max(0, a.fitness - BASE_FITNESS) * 0.00004; 
+            if (a.age > REPRODUCTION_MIN_AGE && Math.random() < reproChance) {
+                a.fitness -= REPRODUCTION_COST;
+                // Offspring spawns near parent
+                let offspring = createAgent(a.x + (Math.random()*10-5), a.y + (Math.random()*10-5), a.strategy);
+                agents.push(offspring);
+            }
+        }
+
+        // Cleanup eaten food
+        foods = foods.filter(f => !f.toBeDeleted);
+
+        draw();
+        updateUI();
+        requestAnimationFrame(update);
+    }
+
+    // --- Rendering ---
+    function draw() {
+        simCtx.clearRect(0, 0, width, height);
+
+        // Draw Sensing Radius (subtle background circles)
+        /* Uncomment if you want to see the food sensing ranges 
+        simCtx.fillStyle = 'rgba(34, 197, 94, 0.05)';
+        for (let f of foods) {
+            simCtx.beginPath();
+            simCtx.arc(f.x, f.y, SENSE_RADIUS, 0, Math.PI * 2);
+            simCtx.fill();
+        } */
+
+        // Draw Connections (Lines indicating lock-ins)
+        simCtx.lineWidth = 1;
+        for (let f of foods) {
+            for (let a of f.lockedAgents) {
+                simCtx.strokeStyle = a.strategy === 'hawk' ? 'rgba(239, 68, 68, 0.5)' : 'rgba(59, 130, 246, 0.5)';
+                simCtx.beginPath();
+                
+                // Account for drawing lines across the toroidal boundary properly visually
+                let vec = toroidalDirection(a.x, a.y, f.x, f.y);
+                simCtx.moveTo(a.x, a.y);
+                simCtx.lineTo(a.x + vec.dx, a.y + vec.dy);
+                simCtx.stroke();
+            }
+        }
+
+        // Draw Foods
+        simCtx.fillStyle = '#22c55e'; // green
+        for (let f of foods) {
+            simCtx.beginPath();
+            simCtx.arc(f.x, f.y, 4, 0, Math.PI * 2);
+            simCtx.fill();
+        }
+
+        // Draw Agents
+        for (let a of agents) {
+            simCtx.fillStyle = a.strategy === 'hawk' ? '#ef4444' : '#3b82f6';
+            
+            simCtx.translate(a.x, a.y);
+            simCtx.rotate(a.dir);
+            
+            simCtx.beginPath();
+            if (a.strategy === 'hawk') {
+                // Draw a pointed triangle for Hawks
+                simCtx.moveTo(6, 0);
+                simCtx.lineTo(-4, 4);
+                simCtx.lineTo(-4, -4);
+            } else {
+                // Draw a softer circle/oval for Doves
+                simCtx.arc(0, 0, 4, 0, Math.PI*2);
+            }
+            simCtx.fill();
+            
+            simCtx.rotate(-a.dir);
+            simCtx.translate(-a.x, -a.y);
+        }
+    }
+
+    // --- UI and Graph Update ---
+    function updateUI() {
+        let hCount = 0, dCount = 0;
+        let hFit = 0, dFit = 0;
+
+        for (let a of agents) {
+            if (a.strategy === 'hawk') { hCount++; hFit += a.fitness; }
+            else { dCount++; dFit += a.fitness; }
+        }
+
+        document.getElementById('stat-hawk-pop').innerText = hCount;
+        document.getElementById('stat-dove-pop').innerText = dCount;
+        
+        document.getElementById('stat-hawk-fit').innerText = hCount ? (hFit/hCount).toFixed(1) : "0.0";
+        document.getElementById('stat-dove-fit').innerText = dCount ? (dFit/dCount).toFixed(1) : "0.0";
+
+        // Time Elapsed (Assuming 60 FPS)
+        let totalSeconds = Math.floor(frameCount / 60);
+        let mins = Math.floor(totalSeconds / 60);
+        let secs = totalSeconds % 60;
+        document.getElementById('stat-time').innerText = `${mins}:${secs.toString().padStart(2, '0')}`;
+
+        // Update Graph every 10 frames
+        if (frameCount % 10 === 0) {
+            let total = hCount + dCount;
+            if (total > 0) {
+                history.push({ h: hCount / total, d: dCount / total });
+                if (history.length > 200) history.shift(); // Keep last 200 data points
+                drawGraph();
+            }
+        }
+
+        // Calculate 10-second rolling average (10s = 600 frames = 60 history entries)
+        let recentHistory = history.slice(-60);
+        let avgHawk = recentHistory.length > 0 
+            ? recentHistory.reduce((sum, val) => sum + val.h, 0) / recentHistory.length 
+            : (hCount + dCount > 0 ? hCount / (hCount + dCount) : 0);
+        
+        document.getElementById('stat-hawk-avg').innerText = (avgHawk * 100).toFixed(1) + '%';
+    }
+
+    function drawGraph() {
+        if (history.length === 0) return;
+        let w = graphCanvas.width;
+        let h = graphCanvas.height;
+        
+        graphCtx.clearRect(0, 0, w, h);
+        
+        let step = w / (history.length - 1 || 1);
+        
+        // Draw Hawks (Red area from top down)
+        graphCtx.fillStyle = 'rgba(239, 68, 68, 0.8)';
+        graphCtx.beginPath();
+        graphCtx.moveTo(0, 0);
+        for(let i=0; i<history.length; i++) {
+            graphCtx.lineTo(i*step, history[i].h * h);
+        }
+        graphCtx.lineTo(w, 0);
+        graphCtx.fill();
+
+        // Draw Doves (Blue area from bottom up)
+        graphCtx.fillStyle = 'rgba(59, 130, 246, 0.8)';
+        graphCtx.beginPath();
+        graphCtx.moveTo(0, h);
+        for(let i=0; i<history.length; i++) {
+            // Y is inverted in canvas, so we map the height up from the bottom
+            graphCtx.lineTo(i*step, h - (history[i].d * h));
+        }
+        graphCtx.lineTo(w, h);
+        graphCtx.fill();
+    }
+
+    // Start
+    initSim();
+    requestAnimationFrame(update);
+
+</script>
+</body>
+</html>
